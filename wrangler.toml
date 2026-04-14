@@ -1,0 +1,27 @@
+name = "domain-checker"
+main = "worker.py"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["python_workers"]
+
+# Cron trigger - runs every 15 minutes
+[triggers]
+crons = ["*/15 * * * *"] 
+
+# KV namespace for domain config (active + backup lists)
+[[kv_namespaces]]
+binding = "DOMAIN_CONFIG"
+id = "a78cf1711270441abbbc95da5bdd5d4e"
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1

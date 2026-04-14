@@ -1,0 +1,13 @@
+{
+  "name": "domain-checker-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker for checking domain blocking status",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.66.0"
+  }
+}
