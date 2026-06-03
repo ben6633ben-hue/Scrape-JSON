@@ -1075,16 +1075,33 @@ async def handle_test():
     return Response(safe_json_dumps(result, indent=2), headers=_json_headers())
 
 
-async def handle_get_config(env):
-    """GET /api/config — current config JSON."""
+def _request_has_full(request) -> bool:
+    """True if the request URL contains ?full=true."""
+    try:
+        url_str = str(request.url) if request and hasattr(request, "url") else ""
+        qs = parse_qs(urlparse(url_str).query)
+        return qs.get("full", [""])[0].lower() == "true"
+    except Exception:
+        return False
+
+
+async def handle_get_config(env, request=None):
+    """GET /api/config — current config JSON. API slot hidden unless ?full=true."""
     config = await get_config(env)
+    if not _request_has_full(request):
+        active = {k: v for k, v in (config.get("active") or {}).items() if k.upper() != "API"}
+        config = dict(config)
+        config["active"] = active
     return Response(safe_json_dumps(config, indent=2), headers=_json_headers_read_only())
 
 
-async def handle_get_active(env):
-    """GET /api/active — active slots only, e.g. { \"FB\": \"https://...\", \"LP\": \"https://...\" }."""
+async def handle_get_active(env, request=None):
+    """GET /api/active — active slots only, e.g. { \"FB\": \"https://...\", \"LP\": \"https://...\" }. API slot hidden unless ?full=true."""
     config = await get_config(env)
-    return Response(safe_json_dumps(config.get("active") or {}, indent=2), headers=_json_headers_read_only())
+    active = dict(config.get("active") or {})
+    if not _request_has_full(request):
+        active = {k: v for k, v in active.items() if k.upper() != "API"}
+    return Response(safe_json_dumps(active, indent=2), headers=_json_headers_read_only())
 
 
 async def handle_get_backups(env):
@@ -1702,9 +1719,9 @@ async def on_fetch(request, env, ctx):
         if inner == "config":
             if method in ("PUT", "POST"):
                 return await handle_put_config(request, env)
-            return await handle_get_config(env)
+            return await handle_get_config(env, request)
         if inner == "active":
-            return await handle_get_active(env)
+            return await handle_get_active(env, request)
         if inner == "backups":
             return await handle_get_backups(env)
         if inner == "status":
