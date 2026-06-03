@@ -1355,6 +1355,8 @@ def get_ui_html(base_path=""):
   <script>
     const base = location.origin + "__BASE_PATH__";
     const apiPrefix = "__API_PREFIX__";
+    const showFull = new URLSearchParams(location.search).get('full') === 'true';
+    const fullSuffix = showFull ? '?full=true' : '';
     function msg(s, isError) {
       const el = document.getElementById('msg');
       el.textContent = s;
@@ -1483,7 +1485,7 @@ def get_ui_html(base_path=""):
       setBtnLoading(btn, true, 'Loading…');
       try {
         await withRetry(async function () {
-          const r = await fetchWithTimeout(base + apiPrefix + '/config');
+          const r = await fetchWithTimeout(base + apiPrefix + '/config' + fullSuffix);
           const c = await responseJson(r);
           const active = c.active && typeof c.active === 'object' && !Array.isArray(c.active) ? c.active : {};
           setActiveSlots(active);
@@ -1609,7 +1611,7 @@ def get_ui_html(base_path=""):
       const backups = getBackupsFromTextarea();
       const json = JSON.stringify({ active: active, backups: backups }, null, 2);
       pre.textContent = json;
-      document.getElementById('openJsonTab').href = base + apiPrefix + '/config';
+      document.getElementById('openJsonTab').href = base + apiPrefix + '/config' + fullSuffix;
       if (panel.style.display === 'none') {
         panel.style.display = 'block';
       } else {
