@@ -898,6 +898,8 @@ async def run_failover(env):
 
     backups_set = set(backups)
     for slot_label in slots_ordered:
+        if slot_label.upper() == "API":
+            continue
         domain = active.get(slot_label)
         if not domain:
             continue
@@ -947,6 +949,8 @@ async def run_failover(env):
 
     down_slots = []
     for slot_label in slots_ordered:
+        if slot_label.upper() == "API":
+            continue
         domain = active.get(slot_label)
         if not domain:
             continue
@@ -1154,6 +1158,16 @@ async def handle_put_config(request, env):
             body = js_to_py(body)
         if not isinstance(body, dict):
             return Response(safe_json_dumps({"error": "JSON body with active (object) and backups (array) required"}), headers=_json_headers(), status=400)
+        if not _request_is_full(request, env):
+            existing = await get_config(env)
+            existing_active = existing.get("active") or {}
+            incoming_active = body.get("active") or {}
+            if isinstance(incoming_active, dict):
+                for k, v in existing_active.items():
+                    if k.upper() == "API" and k not in incoming_active:
+                        incoming_active[k] = v
+                body = dict(body)
+                body["active"] = incoming_active
         ok = await put_config(env, body)
         config = await get_config(env)
         return Response(safe_json_dumps({"ok": ok, "config": config}, indent=2), headers=_json_headers())
