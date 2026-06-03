@@ -88,15 +88,22 @@ def _get_auth_credentials(env):
     return (user, password, secret.strip())
 
 
-def _verify_password(provided_user: str, provided_password: str, creds) -> bool:
+def _get_full_user(env) -> str:
+    """Username (FULL_USER env var) that gets full access — API slot visible in config."""
+    v = _env_str(env, "FULL_USER")
+    return v.strip() if v and v.strip() else ""
+
+
+def _verify_password(provided_user: str, provided_password: str, creds, full_user: str = "") -> bool:
     if not creds:
         return False
     admin_user, admin_password, _ = creds
     if not provided_user or not provided_password:
         return False
-    ok_user = hmac.compare_digest(provided_user.strip().encode("utf-8"), admin_user.encode("utf-8"))
     ok_pass = hmac.compare_digest(provided_password.encode("utf-8"), admin_password.encode("utf-8"))
-    return ok_user and ok_pass
+    ok_admin = hmac.compare_digest(provided_user.strip().encode("utf-8"), admin_user.encode("utf-8"))
+    ok_full = bool(full_user) and hmac.compare_digest(provided_user.strip().encode("utf-8"), full_user.encode("utf-8"))
+    return (ok_admin or ok_full) and ok_pass
 
 
 def _make_session_cookie(user: str, base_path: str, session_secret: str) -> str:
@@ -124,6 +131,26 @@ def _verify_session_cookie(cookie_val: str, session_secret: str) -> bool:
         return hmac.compare_digest(sig, expected)
     except Exception:
         return False
+
+
+def _get_session_user(cookie_val: str, session_secret: str) -> str:
+    """Username from a valid non-expired session cookie, or ''."""
+    if not cookie_val or "." not in cookie_val:
+        return ""
+    payload, sig = cookie_val.rsplit(".", 1)
+    try:
+        raw = base64.urlsafe_b64decode(payload + "==")
+        parts = raw.decode().split(":")
+        if len(parts) != 2:
+            return ""
+        if int(parts[1]) < int(time.time()):
+            return ""
+        expected = hmac.new(session_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return ""
+        return parts[0]
+    except Exception:
+        return ""
 
 
 def _get_cookie(request, name: str) -> str:
@@ -157,8 +184,8 @@ def _get_basic_auth(request) -> tuple:
     return ("", "")
 
 
-def _is_authenticated(request, base_path: str, creds) -> bool:
-    """True if session cookie or Basic auth valid."""
+def _is_authenticated(request, base_path: str, creds, full_user: str = "") -> bool:
+    """True if session cookie or Basic auth valid (accepts both admin and full_user)."""
     if not creds:
         return True
     _, _, session_secret = creds
@@ -166,9 +193,22 @@ def _is_authenticated(request, base_path: str, creds) -> bool:
     if cookie and _verify_session_cookie(cookie, session_secret):
         return True
     user, password = _get_basic_auth(request)
-    if user and password and _verify_password(user, password, creds):
+    if user and password and _verify_password(user, password, creds, full_user):
         return True
     return False
+
+
+def _request_is_full(request, env) -> bool:
+    """True if the session belongs to FULL_USER — grants API slot visibility."""
+    full_user = _get_full_user(env)
+    if not full_user:
+        return False
+    creds = _get_auth_credentials(env)
+    if not creds:
+        return False
+    _, _, session_secret = creds
+    cookie = _get_cookie(request, SESSION_COOKIE_NAME)
+    return _get_session_user(cookie, session_secret) == full_user
 
 
 def _cors_headers():
@@ -1075,20 +1115,10 @@ async def handle_test():
     return Response(safe_json_dumps(result, indent=2), headers=_json_headers())
 
 
-def _request_has_full(request) -> bool:
-    """True if the request URL contains ?full=true."""
-    try:
-        url_str = str(request.url) if request and hasattr(request, "url") else ""
-        qs = parse_qs(urlparse(url_str).query)
-        return qs.get("full", [""])[0].lower() == "true"
-    except Exception:
-        return False
-
-
 async def handle_get_config(env, request=None):
-    """GET /api/config — current config JSON. API slot hidden unless ?full=true."""
+    """GET /api/config — current config JSON. API slot hidden unless session belongs to FULL_USER."""
     config = await get_config(env)
-    if not _request_has_full(request):
+    if not _request_is_full(request, env):
         active = {k: v for k, v in (config.get("active") or {}).items() if k.upper() != "API"}
         config = dict(config)
         config["active"] = active
@@ -1352,8 +1382,6 @@ def get_ui_html(base_path=""):
   <script>
     const base = location.origin + "__BASE_PATH__";
     const apiPrefix = "__API_PREFIX__";
-    const showFull = new URLSearchParams(location.search).get('full') === 'true';
-    const fullSuffix = showFull ? '?full=true' : '';
     function msg(s, isError) {
       const el = document.getElementById('msg');
       el.textContent = s;
@@ -1482,7 +1510,7 @@ def get_ui_html(base_path=""):
       setBtnLoading(btn, true, 'Loading…');
       try {
         await withRetry(async function () {
-          const r = await fetchWithTimeout(base + apiPrefix + '/config' + fullSuffix);
+          const r = await fetchWithTimeout(base + apiPrefix + '/config');
           const c = await responseJson(r);
           const active = c.active && typeof c.active === 'object' && !Array.isArray(c.active) ? c.active : {};
           setActiveSlots(active);
@@ -1608,7 +1636,7 @@ def get_ui_html(base_path=""):
       const backups = getBackupsFromTextarea();
       const json = JSON.stringify({ active: active, backups: backups }, null, 2);
       pre.textContent = json;
-      document.getElementById('openJsonTab').href = base + apiPrefix + '/config' + fullSuffix;
+      document.getElementById('openJsonTab').href = base + apiPrefix + '/config';
       if (panel.style.display === 'none') {
         panel.style.display = 'block';
       } else {
@@ -1650,7 +1678,7 @@ def get_ui_html(base_path=""):
     return html.replace("__BASE_PATH__", base_path).replace("__API_PREFIX__", api_prefix)
 
 
-async def _handle_login_post(request, base_path: str, creds):
+async def _handle_login_post(request, base_path: str, creds, full_user: str = ""):
     """Parse form body, verify credentials, return (Response with redirect + cookie) or (None, error_str)."""
     try:
         body_js = await request.text() if hasattr(request, "text") else ""
@@ -1660,10 +1688,11 @@ async def _handle_login_post(request, base_path: str, creds):
     data = parse_qs(body, keep_blank_values=True)
     user = (data.get("user") or [""])[0]
     password = (data.get("pass") or [""])[0]
-    if not _verify_password(user, password, creds):
+    if not _verify_password(user, password, creds, full_user):
         return get_login_html(base_path, "invalid"), None
-    admin_user, _, session_secret = creds
-    cookie_val = _make_session_cookie(admin_user, base_path, session_secret)
+    _, _, session_secret = creds
+    # Store the actual submitted username so session-based checks (e.g. full_user) work correctly
+    cookie_val = _make_session_cookie(user.strip(), base_path, session_secret)
     path_for_cookie = base_path if base_path else "/"
     cookie = "%s=%s; Path=%s; Max-Age=%d; HttpOnly; Secure; SameSite=Strict" % (
         SESSION_COOKIE_NAME, cookie_val, path_for_cookie, SESSION_TTL_SEC
@@ -1701,13 +1730,13 @@ async def on_fetch(request, env, ctx):
                 loc = base_path if base_path else "/"
                 return Response("", status=302, headers={"Location": loc, **_security_headers()})
             if method == "POST":
-                login_html, redirect_resp = await _handle_login_post(request, base_path or "", creds)
+                login_html, redirect_resp = await _handle_login_post(request, base_path or "", creds, _get_full_user(env))
                 if redirect_resp is not None:
                     return redirect_resp
                 return Response(login_html, status=401, headers={"content-type": "text/html;charset=UTF-8", **_security_headers()})
             return Response(get_login_html(base_path or ""), headers={"content-type": "text/html;charset=UTF-8", **_security_headers()})
 
-        if creds and inner in protected and not _is_authenticated(request, base_path or "", creds):
+        if creds and inner in protected and not _is_authenticated(request, base_path or "", creds, _get_full_user(env)):
             if inner == "__ui__" and method == "GET":
                 return Response(get_login_html(base_path or ""), status=401, headers={"content-type": "text/html;charset=UTF-8", **_security_headers()})
             return Response(safe_json_dumps({"error": "Unauthorized", "message": "Login required"}), status=401, headers={"Content-Type": "application/json", **_security_headers()})
