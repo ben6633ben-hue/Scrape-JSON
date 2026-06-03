@@ -46,6 +46,7 @@ _PATH_ROUTES = {
     "/api/active": "active", "/api/backups": "backups", "/api/backup": "backups",
     "/api/run": "run", "/check": "run",
     "/api/test-email": "test-email", "/login": LOGIN_INNER, "/api/login": LOGIN_INNER,
+    "/logout": "logout", "/api/logout": "logout",
 }
 # Public endpoints: always at root, no SECRET_PATH or auth
 _PATH_PUBLIC = {"/active": "active", "/backups": "backups", "/backup": "backups", "/config": "config"}
@@ -1300,7 +1301,10 @@ def get_ui_html(base_path=""):
 <body>
   <div class="layout">
   <div class="main">
-  <h1>Link Monitor</h1>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.25rem;">
+    <h1 style="margin:0;">Link Monitor</h1>
+    <a href="__BASE_PATH__/logout" style="font-size:0.8rem;color:#71717a;text-decoration:none;padding:0.3rem 0.7rem;border:1px solid #3f3f46;border-radius:6px;" onmouseover="this.style.color='#e4e4e7'" onmouseout="this.style.color='#71717a'">Log out</a>
+  </div>
   <div class="card">
     <div class="card-title-main">Your Main Links</div>
     <p class="card-desc">These are the links that are checked regularly. Give each one a short label (e.g. Home, Blog, Shop) and the full website address.</p>
@@ -1704,6 +1708,18 @@ async def _handle_login_post(request, base_path: str, creds, full_user: str = ""
     return None, Response("", status=302, headers=headers)
 
 
+def handle_logout(base_path: str):
+    """Clear session cookie and redirect to login page."""
+    location = (base_path or "") + "/" + LOGIN_INNER
+    if not location.startswith("/"):
+        location = "/" + location
+    path_for_cookie = base_path if base_path else "/"
+    clear_cookie = "%s=; Path=%s; Max-Age=0; HttpOnly; Secure; SameSite=Strict" % (
+        SESSION_COOKIE_NAME, path_for_cookie
+    )
+    return Response("", status=302, headers={"Location": location, "Set-Cookie": clear_cookie, **_security_headers()})
+
+
 async def on_fetch(request, env, ctx):
     try:
         url = str(request.url) if hasattr(request, 'url') else ''
@@ -1741,6 +1757,8 @@ async def on_fetch(request, env, ctx):
                 return Response(get_login_html(base_path or ""), status=401, headers={"content-type": "text/html;charset=UTF-8", **_security_headers()})
             return Response(safe_json_dumps({"error": "Unauthorized", "message": "Login required"}), status=401, headers={"Content-Type": "application/json", **_security_headers()})
 
+        if inner == "logout":
+            return handle_logout(base_path or "")
         if inner == "__ui__":
             resp = Response(get_ui_html(base_path or ""), headers={"content-type": "text/html;charset=UTF-8", **_security_headers()})
             return resp
